@@ -267,6 +267,10 @@ Public Class mlib
         Public amount As Double
         Public uamount As Double
     End Class
+    Public Structure features
+        Public Const p2sh As Integer = 306000
+    End Structure
+
     Public cleartextpacket As String
 
     '////////////
@@ -396,6 +400,9 @@ Public Class mlib
 
     Public Function getmastercointransaction(ByVal bitcoin_con As bitcoinrpcconnection, ByVal txid As String, ByVal txtype As String)
         Dim tx As txn = JsonConvert.DeserializeObject(Of txn)(rpccall(bitcoin_con, "getrawtransaction", 2, txid, 1, 0))
+        ' determine, if pay-to-script-hash outputs and inputs are supported
+        Dim blockheight As Integer = getblockcount(bitcoin_con) - tx.result.confirmations + 1
+        Dim p2sh_enabled As Boolean = features.p2sh <= blockheight
         'was it a purchase to consider as generate?
         If txtype = "generate" Then
             Dim txinputs As Integer
@@ -415,10 +422,12 @@ Public Class mlib
                 Dim voutarray() As Vout = vinresults.result.vout.ToArray
                 For k = 0 To UBound(voutarray)
                     If voutarray(k).n = voutnum Then
-                         'check vout is standard pubkeyhash
+                        'check vout is standard pubkeyhash or p2sh
                         If voutarray(k).scriptPubKey.type.ToString.ToLower <> "pubkeyhash" Then
-                            'drop transaction
-                            Exit Function
+                            If Not (p2sh_enabled And voutarray(k).scriptPubKey.type.ToString.ToLower = "scripthash") Then
+                                'drop transaction
+                                Exit Function
+                            End If
                         End If
                         'check we haven't seen this input address before
                         If txinputadd.Contains(voutarray(k).scriptPubKey.addresses(0).ToString) Then
@@ -489,10 +498,12 @@ Public Class mlib
                 Dim voutarray() As Vout = vinresults.result.vout.ToArray
                 For k = 0 To UBound(voutarray)
                     If voutarray(k).n = voutnum Then
-                        'check vout is standard pubkeyhash
+                        'check vout is standard pubkeyhash or p2sh
                         If voutarray(k).scriptPubKey.type.ToString.ToLower <> "pubkeyhash" Then
-                            'drop transaction
-                            Exit Function
+                            If Not (p2sh_enabled And voutarray(k).scriptPubKey.type.ToString.ToLower = "scripthash") Then
+                                'drop transaction
+                                Exit Function
+                            End If
                         End If
                         'check we haven't seen this input address before
                         If txinputadd.Contains(voutarray(k).scriptPubKey.addresses(0).ToString) Then
@@ -518,7 +529,12 @@ Public Class mlib
                 For Each Vout In tx.result.vout
                     If Not IsNothing(Vout.scriptPubKey.addresses) Then
                         For Each address As String In Vout.scriptPubKey.addresses
-                            If address <> "1EXoDusjGwvnjZUyKkxZ4UHEf77z6A5S4P" And Vout.scriptPubKey.type.ToString.ToLower = "pubkeyhash" Then voutstring = voutstring & "-" & address
+                            If address <> "1EXoDusjGwvnjZUyKkxZ4UHEf77z6A5S4P" Then
+                                If Vout.scriptPubKey.type.ToString.ToLower = "pubkeyhash" Or
+                                  p2sh_enabled And Vout.scriptPubKey.type.ToString.ToLower = "scripthash" Then
+                                    voutstring = voutstring & "-" & address
+                                End If
+                            End If
                         Next
                     End If
                 Next
@@ -554,10 +570,12 @@ Public Class mlib
                 Dim voutarray() As Vout = vinresults.result.vout.ToArray
                 For k = 0 To UBound(voutarray)
                     If voutarray(k).n = voutnum Then
-                        'check vout is standard pubkeyhash
+                        'check vout is standard pubkeyhash or p2sh
                         If voutarray(k).scriptPubKey.type.ToString.ToLower <> "pubkeyhash" Then
-                            'drop transaction
-                            Exit Function
+                            If Not (p2sh_enabled And voutarray(k).scriptPubKey.type.ToString.ToLower = "scripthash") Then
+                                'drop transaction
+                                Exit Function
+                            End If
                         End If
                         'check we haven't seen this input address before
                         If txinputadd.Contains(voutarray(k).scriptPubKey.addresses(0).ToString) Then
@@ -692,10 +710,12 @@ Public Class mlib
                 For k = 0 To UBound(voutarray)
                     If voutarray(k).n = voutnum Then
                         inputsum = inputsum + voutarray(k).value
-                        'check vout is standard pubkeyhash
+                        'check vout is standard pubkeyhash or p2sh
                         If voutarray(k).scriptPubKey.type.ToString.ToLower <> "pubkeyhash" Then
-                            'drop transaction
-                            Exit Function
+                            If Not (p2sh_enabled And voutarray(k).scriptPubKey.type.ToString.ToLower = "scripthash") Then
+                                'drop transaction
+                                Exit Function
+                            End If
                         End If
                         'check we haven't seen this input address before
                         If txinputadd.Contains(voutarray(k).scriptPubKey.addresses(0).ToString) Then
@@ -726,7 +746,8 @@ Public Class mlib
                     For i = 0 To UBound(vouts)
                         Try
                             outputsum = outputsum + vouts(i).value
-                            If vouts(i).scriptPubKey.type = "pubkeyhash" And vouts(i).scriptPubKey.addresses(0).ToString <> "1EXoDusjGwvnjZUyKkxZ4UHEf77z6A5S4P" Then
+                            If vouts(i).scriptPubKey.addresses(0).ToString <> "1EXoDusjGwvnjZUyKkxZ4UHEf77z6A5S4P" And
+                              (vouts(i).scriptPubKey.type = "pubkeyhash" Or p2sh_enabled And vouts(i).scriptPubKey.type = "scripthash") Then
                                 outputs.Rows.Add(Trim(vouts(i).scriptPubKey.addresses(0).ToString))
                             End If
                             If vouts(i).scriptPubKey.type = "multisig" And vouts(i).scriptPubKey.addresses(0).ToString <> "1EXoDusjGwvnjZUyKkxZ4UHEf77z6A5S4P" Then
@@ -757,7 +778,7 @@ Public Class mlib
 
                     'SPEC:"The reference address will be determined by the remaining output with the highest vout index"
                     If outputs.Rows.Count > 0 Then
-                        refaddress = outputs.Rows(outputs.Rows.Count - 1).Item(0) 'last pubkeyhash vout
+                        refaddress = outputs.Rows(outputs.Rows.Count - 1).Item(0) 'last pubkeyhash or p2sh vout
                         If pubkeys.Rows.Count > 0 And pubkeys.Rows.Count < 2 Then 'we have data to work with
                             '1 packet
                             If pubkeys.Rows.Count = 1 Then
@@ -828,10 +849,12 @@ Public Class mlib
                 For k = 0 To UBound(voutarray)
                     If voutarray(k).n = voutnum Then
                         inputsum = inputsum + voutarray(k).value
-                        'check vout is standard pubkeyhash
+                        'check vout is standard pubkeyhash or p2sh
                         If voutarray(k).scriptPubKey.type.ToString.ToLower <> "pubkeyhash" Then
-                            'drop transaction
-                            Exit Function
+                            If Not (p2sh_enabled And voutarray(k).scriptPubKey.type.ToString.ToLower = "scripthash") Then
+                                'drop transaction
+                                Exit Function
+                            End If
                         End If
                         'check we haven't seen this input address before
                         If txinputadd.Contains(voutarray(k).scriptPubKey.addresses(0).ToString) Then
@@ -928,10 +951,12 @@ Public Class mlib
                     Dim voutarray() As Vout = vinresults.result.vout.ToArray
                     For k = 0 To UBound(voutarray)
                         If voutarray(k).n = voutnum Then
-                            'check vout is standard pubkeyhash
+                            'check vout is standard pubkeyhash or p2sh
                             If voutarray(k).scriptPubKey.type.ToString.ToLower <> "pubkeyhash" Then
-                                'drop transaction
-                                Exit Function
+                                If Not (p2sh_enabled And voutarray(k).scriptPubKey.type.ToString.ToLower = "scripthash") Then
+                                    'drop transaction
+                                    Exit Function
+                                End If
                             End If
                             'check we haven't seen this input address before
                             If txinputadd.Contains(voutarray(k).scriptPubKey.addresses(0).ToString) Then
@@ -1151,10 +1176,12 @@ Public Class mlib
                     Dim voutarray() As Vout = vinresults.result.vout.ToArray
                     For k = 0 To UBound(voutarray)
                         If voutarray(k).n = voutnum Then
-                            'check vout is standard pubkeyhash
+                            'check vout is standard pubkeyhash or p2sh
                             If voutarray(k).scriptPubKey.type.ToString.ToLower <> "pubkeyhash" Then
-                                'drop transaction
-                                Exit Function
+                                If Not (p2sh_enabled And voutarray(k).scriptPubKey.type.ToString.ToLower = "scripthash") Then
+                                    'drop transaction
+                                    Exit Function
+                                End If
                             End If
                             'check we haven't seen this input address before
                             If txinputadd.Contains(voutarray(k).scriptPubKey.addresses(0).ToString) Then
@@ -1361,10 +1388,12 @@ Public Class mlib
                 Dim voutarray() As Vout = vinresults.result.vout.ToArray
                 For k = 0 To UBound(voutarray)
                     If voutarray(k).n = voutnum Then
-                        'check vout is standard pubkeyhash
+                        'check vout is standard pubkeyhash or p2sh
                         If voutarray(k).scriptPubKey.type.ToString.ToLower <> "pubkeyhash" Then
-                            'drop transaction
-                            Exit Function
+                            If Not (p2sh_enabled And voutarray(k).scriptPubKey.type.ToString.ToLower = "scripthash") Then
+                                'drop transaction
+                                Exit Function
+                            End If
                         End If
                         'check we haven't seen this input address before
                         If txinputadd.Contains(voutarray(k).scriptPubKey.addresses(0).ToString) Then
@@ -1414,7 +1443,10 @@ Public Class mlib
                                     Dim asmvars As String() = vouts(i).scriptPubKey.asm.ToString.Split(" ")
                                     pubkeyhex = asmvars(2)
                                 End If
-                                If vouts(i).scriptPubKey.type = "pubkeyhash" And vouts(i).scriptPubKey.addresses(0).ToString <> "1EXoDusjGwvnjZUyKkxZ4UHEf77z6A5S4P" Then
+
+
+                                If vouts(i).scriptPubKey.addresses(0).ToString <> "1EXoDusjGwvnjZUyKkxZ4UHEf77z6A5S4P" And
+                                  (vouts(i).scriptPubKey.type = "pubkeyhash" Or p2sh_enabled And vouts(i).scriptPubKey.type = "scripthash") Then
                                     'get address sequence no
                                     Dim rowbarray As Byte()
                                     rowbarray = ToByteArray(Trim(vouts(i).scriptPubKey.addresses(0).ToString))
@@ -1451,7 +1483,7 @@ Public Class mlib
                             End If
                             'SPEC:"The reference address will be determined by the remaining output with the highest vout index"
                             If outputs.Rows.Count > 0 Then
-                                refaddress = outputs.Rows(outputs.Rows.Count - 1).Item(0) 'last pubkeyhash vout
+                                refaddress = outputs.Rows(outputs.Rows.Count - 1).Item(0) 'last pubkeyhash or p2sh vout
                                 isvalidtx = True
                             End If
 
